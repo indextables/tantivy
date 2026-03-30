@@ -560,7 +560,7 @@ fn range_infallible(inp: &str) -> JResult<&str, UserInputLeaf> {
             (
                 (
                     value((), tag(">=")),
-                    map(word_infallible("", false), |(bound, err)| {
+                    map(word_infallible(")", false), |(bound, err)| {
                         (
                             (
                                 bound
@@ -574,7 +574,7 @@ fn range_infallible(inp: &str) -> JResult<&str, UserInputLeaf> {
                 ),
                 (
                     value((), tag("<=")),
-                    map(word_infallible("", false), |(bound, err)| {
+                    map(word_infallible(")", false), |(bound, err)| {
                         (
                             (
                                 UserInputBound::Unbounded,
@@ -588,7 +588,7 @@ fn range_infallible(inp: &str) -> JResult<&str, UserInputLeaf> {
                 ),
                 (
                     value((), tag(">")),
-                    map(word_infallible("", false), |(bound, err)| {
+                    map(word_infallible(")", false), |(bound, err)| {
                         (
                             (
                                 bound
@@ -602,7 +602,7 @@ fn range_infallible(inp: &str) -> JResult<&str, UserInputLeaf> {
                 ),
                 (
                     value((), tag("<")),
-                    map(word_infallible("", false), |(bound, err)| {
+                    map(word_infallible(")", false), |(bound, err)| {
                         (
                             (
                                 UserInputBound::Unbounded,
@@ -704,7 +704,11 @@ fn regex(inp: &str) -> IResult<&str, UserInputLeaf> {
                 many1(alt((preceded(char('\\'), char('/')), none_of("/")))),
                 char('/'),
             ),
-            peek(alt((multispace1, eof))),
+            peek(alt((
+                value((), multispace1),
+                value((), char(')')),
+                value((), eof),
+            ))),
         ),
         |elements| UserInputLeaf::Regex {
             field: None,
@@ -721,8 +725,12 @@ fn regex_infallible(inp: &str) -> JResult<&str, UserInputLeaf> {
             opt_i_err(char('/'), "missing delimiter /"),
         ),
         opt_i_err(
-            peek(alt((multispace1, eof))),
-            "expected whitespace or end of input",
+            peek(alt((
+                value((), multispace1),
+                value((), char(')')),
+                value((), eof),
+            ))),
+            "expected whitespace, closing parenthesis, or end of input",
         ),
     )(inp)
     {
@@ -758,7 +766,17 @@ fn negate(expr: UserInputAst) -> UserInputAst {
 fn leaf(inp: &str) -> IResult<&str, UserInputAst> {
     alt((
         delimited(char('('), ast, char(')')),
-        map(char('*'), |_| UserInputAst::from(UserInputLeaf::All)),
+        map(
+            terminated(
+                char('*'),
+                peek(alt((
+                    value((), multispace1),
+                    value((), char(')')),
+                    value((), eof),
+                ))),
+            ),
+            |_| UserInputAst::from(UserInputLeaf::All),
+        ),
         map(preceded(tuple((tag("NOT"), multispace1)), leaf), negate),
         literal,
     ))(inp)
@@ -779,7 +797,17 @@ fn leaf_infallible(inp: &str) -> JResult<&str, Option<UserInputAst>> {
                 ),
             ),
             (
-                value((), char('*')),
+                value(
+                    (),
+                    terminated(
+                        char('*'),
+                        peek(alt((
+                            value((), multispace1),
+                            value((), char(')')),
+                            value((), eof),
+                        ))),
+                    ),
+                ),
                 map(nothing, |_| {
                     (Some(UserInputAst::from(UserInputLeaf::All)), Vec::new())
                 }),
@@ -1303,6 +1331,14 @@ mod test {
         test_parse_query_to_ast_helper("<a", "{\"*\" TO \"a\"}");
         test_parse_query_to_ast_helper("<=a", "{\"*\" TO \"a\"]");
         test_parse_query_to_ast_helper("<=bsd", "{\"*\" TO \"bsd\"]");
+
+        test_parse_query_to_ast_helper("(<=42)", "{\"*\" TO \"42\"]");
+        test_parse_query_to_ast_helper("(<=42 )", "{\"*\" TO \"42\"]");
+        test_parse_query_to_ast_helper("(age:>5)", "\"age\":{\"5\" TO \"*\"}");
+        test_parse_query_to_ast_helper(
+            "(title:bar AND age:>12)",
+            "(+\"title\":bar +\"age\":{\"12\" TO \"*\"})",
+        );
     }
 
     #[test]
@@ -1671,6 +1707,25 @@ mod test {
         test_parse_query_to_ast_helper("abc:a b", "(*\"abc\":a *b)");
         test_parse_query_to_ast_helper("abc:\"a b\"", "\"abc\":\"a b\"");
         test_parse_query_to_ast_helper("foo:[1 TO 5]", "\"foo\":[\"1\" TO \"5\"]");
+
+        // Phrase prefixed with *
+        test_parse_query_to_ast_helper("foo:(*A)", "\"foo\":*A");
+        test_parse_query_to_ast_helper("*A", "*A");
+        test_parse_query_to_ast_helper("(*A)", "*A");
+        test_parse_query_to_ast_helper("foo:(A OR B)", "(?\"foo\":A ?\"foo\":B)");
+        test_parse_query_to_ast_helper("foo:(A* OR B*)", "(?\"foo\":A* ?\"foo\":B*)");
+        test_parse_query_to_ast_helper("foo:(*A OR *B)", "(?\"foo\":*A ?\"foo\":*B)");
+
+        // Regexes between parentheses
+        test_parse_query_to_ast_helper("foo:(/A.*/)", "\"foo\":/A.*/");
+        test_parse_query_to_ast_helper("foo:(/A.*/ OR /B.*/)", "(?\"foo\":/A.*/ ?\"foo\":/B.*/)");
+    }
+
+    #[test]
+    fn test_parse_query_all() {
+        test_parse_query_to_ast_helper("*", "*");
+        test_parse_query_to_ast_helper("(*)", "*");
+        test_parse_query_to_ast_helper("(* )", "*");
     }
 
     #[test]
